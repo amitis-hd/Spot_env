@@ -179,6 +179,21 @@ class Robot(Entity):
         world.emit("released", obj=obj.id)
 
     @action(reach=False)
+    def take_photo(self, world: "World"):
+        """Picture of the cell in front taken with the gripper camera (HIGH level drawn above LOW)."""
+        import base64
+        import io
+
+        from ..render.scene import render_photo
+        img = render_photo(world, world.config.photo_size)
+        world.last_photo = img
+        buf = io.BytesIO()
+        img.save(buf, "PNG")
+        return {"image_png_base64": base64.b64encode(buf.getvalue()).decode("ascii"),
+                "width": img.width, "height": img.height,
+                "of_cell": list(self.facing_cell()), "robot_level": self.level.value}
+
+    @action(reach=False)
     def turn(self, world: "World", direction):
         """Turn in place to face N/E/S/W (also works while standing on a stool)."""
         try:

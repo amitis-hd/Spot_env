@@ -27,6 +27,8 @@ class WorldConfig:
     verbose_failures: bool = False
     #: do not tell the planner which locks a key opens (it has to try)
     hide_key_targets: bool = False
+    #: side length in pixels of take_photo() images
+    photo_size: int = 256
 
 
 class World:
@@ -42,6 +44,7 @@ class World:
         self.departed: list[str] = []       # people who left the lab
         self.goal = None                    # object with .check(world) -> dict
         self.scenario_name = "unnamed"
+        self.last_photo = None              # PIL image of the latest take_photo()
         self._events: list[dict] = []
 
     # ================================================================ building
