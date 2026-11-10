@@ -22,7 +22,7 @@ class Table(Thing):
 
 
 class Shelf(Thing):
-    """Wall-mounted shelf, normally at HIGH level. Does not block the floor."""
+    """Wall-mounted shelf, normally at HIGH level above a counter."""
     kind = "shelf"
     size = Size.LARGE
     surface_capacity = Size.MEDIUM
@@ -48,9 +48,12 @@ class Climbable(Thing):
         if world.children(self, Relation.ON):
             raise ActionFailure(Fail.OBSTRUCTED, f"cannot climb {self.id}", "something is lying on it")
         cell = self.loc.cell
-        if cell != r.cell and not world.walkable(cell):
-            raise ActionFailure(Fail.OBSTRUCTED, f"cannot climb {self.id}", "its cell is blocked")
-        r.cell, r.level, r.standing_on, r.docked = cell, Level.HIGH, self, False
+        others = [t.id for t in world.things_at(cell) if t is not self]
+        if others:
+            raise ActionFailure(Fail.OBSTRUCTED, f"cannot climb {self.id}", f"{others[0]} is in the same cell")
+        r.check_can_move()
+        r.came_from = r.cell
+        r.cell, r.level, r.standing_on = cell, Level.HIGH, self
         world.emit("robot_climbed", on=self.id, cell=list(cell))
 
 

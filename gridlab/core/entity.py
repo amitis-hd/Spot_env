@@ -127,7 +127,9 @@ class Thing(Entity):
     kind = "thing"
     movable = False
     climbable = False
-    blocks_cell = False                    # the robot cannot enter a cell holding this
+    graspable = False                      # fixed thing the gripper can hold on to (door handle, ...)
+    blocks_cell = True                     # the robot cannot enter a cell holding this
+    obstructs_drop = False                 # nothing can be put down in its place (e.g. a person)
     size = Size.SMALL
     surface_capacity: Size | None = None   # largest size that can be put ON this (None = not a surface)
     weight = 1.0
@@ -176,3 +178,13 @@ class Thing(Entity):
         self.check_pick_up(world)
         world.move(self, Location(Relation.HELD))
         world.emit("picked_up", obj=self.id)
+
+    @action(free_hand=True)
+    def grasp(self, world: "World"):
+        "Hold on to this fixed object; the robot cannot move until it releases it."
+        if self.movable:
+            raise ActionFailure(Fail.NOT_SUPPORTED, f"{self.id} is movable; use pick_up")
+        if not self.graspable:
+            raise ActionFailure(Fail.NOT_SUPPORTED, f"{self.id} cannot be grasped")
+        world.robot.holding = self
+        world.emit("grasped", obj=self.id)

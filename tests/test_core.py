@@ -91,31 +91,38 @@ def test_unknown_object_is_indistinguishable_from_nonexistent():
 
 
 # ---------------------------------------------------------------- movement
-def test_go_to_object_picks_adjacent_pose_facing_it():
+def test_go_to_object_teleports_to_nearest_free_neighbour_facing_it():
     w = make_world()
     r = ok(w.execute("go_to", ["table_1"]))
-    rob = w.get_robot()
-    assert tuple(rob["facing_cell"]) == (2, 2)
-    assert r["data"]["path"][0] == [1, 1]
-    assert any(e["type"] == "robot_moved" for e in r["events"])
+    assert w.robot.cell == (1, 2) and w.robot.facing.value == "E"     # closest free neighbour of (2,2)
+    assert r["events"] == [{"type": "robot_moved", "cell": [1, 2], "facing": "E"}]
+    ok(w.execute("go_to", ["table_1"]))                               # already there: stays
+    assert w.robot.cell == (1, 2)
 
 
 def test_go_to_coordinates_and_invalid_targets():
     w = make_world()
     ok(w.execute("go_to", [3, 3, "W"]))
     assert w.robot.cell == (3, 3) and w.robot.facing.value == "W"
-    fails(w.execute("go_to", [2, 2, "N"]), Fail.INVALID_POSITION)   # table cell
+    ok(w.execute("go_to", [3, 3, "N"]))                               # turn in place
+    fails(w.execute("go_to", [2, 2, "N"]), Fail.NO_ACCESS)            # table cell
+    fails(w.execute("go_to", [3, 1, "N"]), Fail.NO_ACCESS)            # stool cell: objects block cells
     fails(w.execute("go_to", [9, 9, "N"]), Fail.INVALID_POSITION)
     fails(w.execute("go_to", ["x"]), Fail.UNKNOWN_OBJECT)
     fails(w.execute("go_to", [1, 2]), Fail.BAD_ARGS)
 
 
-def test_no_path_when_walled_in():
+def test_go_to_ignores_routes_but_needs_a_free_neighbour():
     w = World(width=3, height=1, robot=Robot(cell=(0, 0), facing="E"))
     w.add(Table("t"), cell=(1, 0))
     w.add(Mug("m"), cell=(2, 0))
     w.start()
-    fails(w.execute("go_to", [2, 0, "W"]), Fail.NO_PATH)
+    fails(w.execute("go_to", ["m"]), Fail.NO_ACCESS)                  # only neighbour is the table
+    w2 = World(width=3, height=2, robot=Robot(cell=(0, 0), facing="E"))
+    w2.add(Table("t"), cell=(1, 0)); w2.add(Table("t2"), cell=(1, 1)); w2.add(Mug("m"), cell=(2, 0))
+    w2.start()
+    ok(w2.execute("go_to", ["m"]))                                    # walled off, but go_to teleports
+    assert w2.robot.cell == (2, 1) and w2.robot.facing.value == "N"
 
 
 # ---------------------------------------------------------------- manipulation
@@ -170,32 +177,102 @@ def test_put_down_targets_counter_wall_or_floor():
 
 
 # ---------------------------------------------------------------- climbing
-def test_stool_climb_reaches_high_level():
-    w = make_world()
+def place_stool_below_shelf(w):
     ok(w.execute("go_to", ["stool_1"]))
     ok(w.execute("pick_up", ["stool_1"]))
     ok(w.execute("go_to", [1, 2, "N"]))
-    ok(w.execute("put_down"))                       # stool now at (1,1), in front of counter_2
+    ok(w.execute("put_down"))                       # stool at (1,1), right in front of counter_2/shelf_1
+
+
+def test_stool_climb_enters_stool_cell_and_reaches_high_level():
+    w = make_world()
+    place_stool_below_shelf(w)
     ok(w.execute("climb", ["stool_1"]))
-    assert w.robot.cell == (1, 1) and w.robot.level is Level.HIGH
+    assert w.robot.cell == (1, 1) and w.robot.level is Level.HIGH and w.robot.facing.value == "N"
     fails(w.execute("go_to", ["table_1"]), Fail.MUST_CLIMB_DOWN)
-    fails(w.execute("pick_up", ["stool_1"]), Fail.NOT_REACHABLE)
+    fails(w.execute("climb", ["stool_1"]), Fail.NOT_REACHABLE)   # it is under the robot now
     ok(w.execute("pick_up", ["mug_1"]))             # mug on the HIGH shelf
-    ok(w.execute("climb_down"))                     # allowed while holding something
+    r = ok(w.execute("climb_down"))                 # allowed while carrying
+    assert w.robot.cell == (1, 2) and w.robot.level is Level.LOW and w.robot.facing.value == "N"
+    assert r["events"][0]["off"] == "stool_1"
     fails(w.execute("climb_down"), Fail.ALREADY)
-    ok(w.execute("climb", ["stool_1"]))             # climb in place while holding the mug
+    ok(w.execute("climb", ["stool_1"]))             # climb while carrying the mug
     ok(w.execute("put_on", ["shelf_1"]))
     ok(w.execute("climb_down"))
-    ok(w.execute("pick_up", ["stool_1"]))           # stool is in the robot's own cell
+    ok(w.execute("pick_up", ["stool_1"]))           # stool is in front again
 
 
-def test_cannot_climb_with_things_on_it():
+def test_climb_down_goes_to_another_free_cell_if_origin_taken():
     w = make_world()
+    place_stool_below_shelf(w)
+    ok(w.execute("climb", ["stool_1"]))
+    w.add(Mug("blocker"), cell=(1, 2)); w.known.add("blocker")
+    ok(w.execute("climb_down"))
+    assert w.robot.cell in {(0, 1), (2, 1)}
+    assert w.robot.facing_cell() == (1, 1)          # faces the stool
+
+
+def test_stool_only_climbable_from_neighbouring_cell_and_when_clear():
+    w = make_world()
+    fails(w.execute("climb", ["stool_1"]), Fail.NOT_REACHABLE)
     ok(w.execute("go_to", ["counter_1"]))
     ok(w.execute("pick_up", ["pen_1"]))
     ok(w.execute("go_to", ["stool_1"]))
     ok(w.execute("put_on", ["stool_1"]))
     fails(w.execute("climb", ["stool_1"]), Fail.OBSTRUCTED)
+
+
+def test_put_down_at_high_level_falls_to_low():
+    w = make_world()
+    ok(w.execute("go_to", ["stool_1"]))
+    ok(w.execute("pick_up", ["stool_1"]))
+    ok(w.execute("go_to", [3, 3, "N"]))
+    ok(w.execute("put_down"))                       # stool at (3,2)
+    ok(w.execute("go_to", ["counter_1"]))
+    ok(w.execute("pick_up", ["pen_1"]))
+    ok(w.execute("go_to", [3, 1, "S"]))
+    ok(w.execute("climb", ["stool_1"]))             # spot at (3,2) HIGH facing (3,3): empty air
+    r = ok(w.execute("put_down"))
+    assert r["events"][0] == {"type": "fell", "obj": "pen_1", "cell": [3, 3], "level": "low"}
+
+
+def test_put_down_at_high_level_falls_onto_counter_below():
+    w = make_world()
+    w.add(Pen("pen_2"), cell=(2, 1)); w.known.add("pen_2")
+    ok(w.execute("go_to", ["stool_1"]))
+    ok(w.execute("pick_up", ["stool_1"]))
+    ok(w.execute("go_to", [0, 2, "N"]))
+    ok(w.execute("put_down"))                       # stool at (0,1), in front of counter_1
+    ok(w.execute("go_to", ["pen_2"]))
+    ok(w.execute("pick_up", ["pen_2"]))
+    ok(w.execute("go_to", [0, 2, "N"]))
+    ok(w.execute("climb", ["stool_1"]))             # spot at (0,1) HIGH facing (0,0): nothing HIGH there
+    r = ok(w.execute("put_down"))
+    assert r["events"][0] == {"type": "fell", "obj": "pen_2", "on": "counter_1"}
+
+
+class Lever(Thing):
+    """Test-only fixed object the gripper can hold on to."""
+    kind = "lever"
+    graspable = True
+
+
+def test_holding_something_fixed_prevents_moving():
+    w = make_world()
+    w.add(Lever("lever_1"), cell=(3, 3)); w.known.add("lever_1")
+    ok(w.execute("go_to", ["lever_1"]))
+    fails(w.execute("pick_up", ["lever_1"]), Fail.NOT_MOVABLE)
+    ok(w.execute("grasp", ["lever_1"]))
+    assert w.get_robot()["holding"] == "lever_1" and w.get_robot()["holding_fixed"]
+    fails(w.execute("go_to", ["table_1"]), Fail.HOLDING_FIXED)
+    fails(w.execute("put_down"), Fail.HOLDING_FIXED)
+    fails(w.execute("grasp", ["lever_1"]), Fail.HANDS_FULL)
+    ok(w.execute("release"))
+    ok(w.execute("go_to", ["table_1"]))
+    fails(w.execute("grasp", ["table_1"]), Fail.NOT_SUPPORTED)
+    ok(w.execute("go_to", ["stool_1"]))
+    ok(w.execute("pick_up", ["stool_1"]))
+    fails(w.execute("release"), Fail.NOT_SUPPORTED)  # carried objects are put down, not released
 
 
 # ---------------------------------------------------------------- discovery

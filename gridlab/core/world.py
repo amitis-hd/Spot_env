@@ -100,6 +100,8 @@ class World:
     def walkable(self, cell: Pos) -> bool:
         if not self.in_bounds(cell):
             return False
+        if cell == self.robot.cell:
+            return False
         return not any(t.blocks_cell for t in self.things_at(cell))
 
     def default_reachable(self, t: Thing) -> bool:
@@ -109,21 +111,22 @@ class World:
         r = self.robot
         if held or level is not r.level:
             return False
-        return cell == r.facing_cell() or cell == r.cell
+        return cell == r.facing_cell()
 
     def default_approach_poses(self, t: Thing) -> list[tuple[Pos, Direction]]:
         cell, _, _ = self.root(t)
         poses = []
         for d in Direction:
             n = step(cell, d)
-            if self.walkable(n):
+            if self.walkable(n) or n == self.robot.cell:
                 poses.append((n, direction_between(n, cell)))
         return poses
 
     # ================================================================ mutation
     def move(self, t: Thing, loc: Location):
-        old = t.loc
-        if old.relation is Relation.HELD:
+        """Relocate a thing (things on/in it come along). Moving the held object out of the
+        gripper empties it; subclasses that keep a grip (insert_key) set robot.holding again."""
+        if self.robot.holding is t:
             self.robot.holding = None
         t.loc = loc
         if loc.relation is Relation.HELD:

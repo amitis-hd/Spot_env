@@ -18,7 +18,8 @@ class Fail(str, Enum):
     LOCKED = "LOCKED"
     WRONG_KEY = "WRONG_KEY"
     ALREADY = "ALREADY"                    # already in the requested state
-    NO_PATH = "NO_PATH"                    # go_to: no walkable route
+    NO_ACCESS = "NO_ACCESS"                # go_to/climb_down: no free cell to stand on
+    HOLDING_FIXED = "HOLDING_FIXED"        # gripper holds something fixed in place; release it first
     INVALID_POSITION = "INVALID_POSITION"  # outside the grid / not walkable
     MUST_CLIMB_DOWN = "MUST_CLIMB_DOWN"    # robot is standing on something
     DOCKED = "DOCKED"                      # robot must undock first

@@ -1,12 +1,18 @@
-"""The Spot robot: pose, gripper, and the actions that are not aimed at one object."""
+"""The Spot robot: pose, gripper, and the actions that are not aimed at one object.
+
+Rules:
+- Spot never shares a cell with any object; it acts on the cell in front of it, at its own level.
+- go_to teleports: Spot ends up on a free neighbouring cell of the target, facing it.
+- If the gripper holds something that is fixed in place (a key in a lock, a door handle),
+  Spot cannot move until it lets go (`release`) or frees the object (e.g. `remove_key`).
+"""
 from __future__ import annotations
 
-from collections import deque
 from typing import TYPE_CHECKING
 
 from .entity import Entity, Location, Relation, Thing, action
 from .errors import ActionFailure, Fail
-from .geometry import Direction, Level, Pos, step
+from .geometry import Direction, Level, Pos, direction_between, step
 
 if TYPE_CHECKING:
     from .world import World
@@ -19,13 +25,19 @@ class Robot(Entity):
         self.cell: Pos = tuple(cell)
         self.facing = Direction(facing)
         self.level = Level.LOW
+        #: object in the gripper; if its location is not HELD, it is fixed in place (grasped, not carried)
         self.holding: Thing | None = None
         self.standing_on: Thing | None = None
+        self.came_from: Pos | None = None   # cell Spot climbed from
         self.docked = False
         super().__init__(id, **props)
 
     def facing_cell(self) -> Pos:
         return step(self.cell, self.facing)
+
+    @property
+    def holding_fixed(self) -> bool:
+        return self.holding is not None and self.holding.loc.relation is not Relation.HELD
 
     def public_state(self) -> dict:
         return {
@@ -34,6 +46,7 @@ class Robot(Entity):
             "facing": self.facing.value,
             "facing_cell": list(self.facing_cell()),
             "holding": self.holding.id if self.holding else None,
+            "holding_fixed": self.holding_fixed,
             "standing_on": self.standing_on.id if self.standing_on else None,
             "docked": self.docked,
         }
@@ -42,6 +55,8 @@ class Robot(Entity):
     def _held(self, world: "World", args) -> Thing:
         if self.holding is None:
             raise ActionFailure(Fail.NOT_HOLDING, "the gripper is empty")
+        if self.holding_fixed:
+            raise ActionFailure(Fail.HOLDING_FIXED, f"{self.holding.id} is fixed in place")
         if len(args) == 2:
             obj = world.resolve(args[0])
             if obj is not self.holding:
@@ -50,83 +65,85 @@ class Robot(Entity):
             raise ActionFailure(Fail.BAD_ARGS, "expected ([object], target)")
         return self.holding
 
-    def _ensure_mobile(self):
-        if self.level is not Level.LOW:
-            raise ActionFailure(Fail.MUST_CLIMB_DOWN, "the robot is standing on something")
+    def check_can_move(self):
+        if self.holding_fixed:
+            raise ActionFailure(Fail.HOLDING_FIXED, f"the gripper is holding {self.holding.id}, which is fixed in place")
         if self.docked:
             raise ActionFailure(Fail.DOCKED, "the robot is docked")
+
+    def _free(self, world: "World", cell: Pos) -> bool:
+        return cell == self.cell or world.walkable(cell)
 
     # ------------------------------------------------------------------ actions
     @action(reach=False)
     def go_to(self, world: "World", *args):
-        """go_to(object_id) or go_to(x, y, facing): walk there by the shortest route."""
-        self._ensure_mobile()
+        """go_to(object_id) or go_to(x, y, facing): appear next to the target, facing it."""
+        self.check_can_move()
+        if self.level is not Level.LOW:
+            raise ActionFailure(Fail.MUST_CLIMB_DOWN, "the robot is standing on something")
         if len(args) == 1:
             target = world.resolve(args[0])
             if not isinstance(target, Thing):
                 raise ActionFailure(Fail.BAD_ARGS, "cannot go to that")
             if target.loc.relation is Relation.HELD:
                 raise ActionFailure(Fail.BAD_ARGS, f"{target.id} is in the gripper")
-            goals = list(target.approach_poses(world))
+            poses = [(c, f) for c, f in target.approach_poses(world) if self._free(world, c)]
+            if not poses:
+                raise ActionFailure(Fail.NO_ACCESS, f"no free cell next to {target.id}")
         elif len(args) == 3:
             try:
                 cell, facing = (int(args[0]), int(args[1])), Direction(str(args[2]).upper())
             except (ValueError, TypeError):
                 raise ActionFailure(Fail.BAD_ARGS, "expected go_to(x, y, facing)")
-            if not world.walkable(cell):
-                raise ActionFailure(Fail.INVALID_POSITION, f"cannot stand at {cell}")
-            goals = [(cell, facing)]
+            if not world.in_bounds(cell):
+                raise ActionFailure(Fail.INVALID_POSITION, f"{cell} is outside the lab")
+            if not self._free(world, cell):
+                raise ActionFailure(Fail.NO_ACCESS, f"{cell} is occupied")
+            poses = [(cell, facing)]
         else:
             raise ActionFailure(Fail.BAD_ARGS, "expected go_to(object_id) or go_to(x, y, facing)")
 
-        path = self._shortest_path({c for c, _ in goals}, world)
-        if path is None:
-            raise ActionFailure(Fail.NO_PATH, "no route to the target")
-        end = path[-1]
-        self.cell = end
-        self.facing = next(f for c, f in goals if c == end)
-        world.emit("robot_moved", cell=list(end), facing=self.facing.value)
-        return {"path": [list(p) for p in path]}
-
-    def _shortest_path(self, goal_cells: set, world: "World") -> list[Pos] | None:
-        """BFS over walkable cells; ties broken N, E, S, W for determinism."""
-        start = self.cell
-        prev: dict[Pos, Pos | None] = {start: None}
-        q = deque([start])
-        while q:
-            cur = q.popleft()
-            if cur in goal_cells:
-                path = [cur]
-                while prev[path[-1]] is not None:
-                    path.append(prev[path[-1]])
-                return path[::-1]
-            for d in Direction:
-                nxt = step(cur, d)
-                if nxt not in prev and world.walkable(nxt):
-                    prev[nxt] = cur
-                    q.append(nxt)
-        return None
+        order = list(Direction)
+        cell, facing = min(poses, key=lambda p: (abs(p[0][0] - self.cell[0]) + abs(p[0][1] - self.cell[1]),
+                                                 order.index(p[1])))
+        self.cell, self.facing = cell, facing
+        world.emit("robot_moved", cell=list(cell), facing=facing.value)
 
     @action(reach=False, holding=True)
     def put_down(self, world: "World"):
-        """Put the held object in front of the robot (on the counter/table there, or on the floor)."""
-        obj = self.holding
-        cell, level = self.facing_cell(), self.level
+        """Put the held object in front: on the counter/table/shelf there, else on the floor.
+        At HIGH level with nothing to hold it, the object falls to the LOW level."""
+        obj = self._held(world, ["_"])
+        cell = self.facing_cell()
         if not world.in_bounds(cell):
             raise ActionFailure(Fail.INVALID_POSITION, "there is a wall in front of the robot")
+        if self.level is Level.HIGH:
+            if self._place_at_level(world, obj, cell, Level.HIGH, fall=False):
+                return
+            self._place_at_level(world, obj, cell, Level.LOW, fall=True)
+            return
+        self._place_at_level(world, obj, cell, Level.LOW, fall=False)
+
+    def _place_at_level(self, world: "World", obj: Thing, cell: Pos, level: Level, fall: bool) -> bool:
+        """Place obj in `cell` at `level`. Returns False (HIGH only) if there is nothing there at all."""
         here = world.things_at(cell, level)
-        surfaces = [t for t in here if t.surface_capacity is not None and not t.movable]
+        if any(t.obstructs_drop for t in here):
+            raise ActionFailure(Fail.OBSTRUCTED, "something is in the way", f"{[t.id for t in here if t.obstructs_drop][0]} is there")
+        fixed = [t for t in here if not t.movable]
+        surfaces = [t for t in fixed if t.surface_capacity is not None]
         if surfaces:
             surfaces[0].accept_on(world, obj)
             world.move(obj, Location(Relation.ON, parent=surfaces[0]))
-            world.emit("put", obj=obj.id, on=surfaces[0].id)
-            return
+            world.emit("fell" if fall else "put", obj=obj.id, on=surfaces[0].id)
+            return True
+        if fixed:
+            raise ActionFailure(Fail.CANNOT_SUPPORT, "there is no place to put it",
+                                f"{fixed[0].id} has no surface")
         if level is Level.HIGH:
-            raise ActionFailure(Fail.CANNOT_SUPPORT, "there is nothing to put it on")
-        if not world.walkable(cell):
-            raise ActionFailure(Fail.OBSTRUCTED, "the floor in front of the robot is blocked")
+            return False
         world.move(obj, Location(Relation.AT, cell=cell, level=Level.LOW))
-        world.emit("put", obj=obj.id, cell=list(cell), level="low")
+        world.emit("fell" if fall else "put", obj=obj.id, cell=list(cell), level="low")
+        return True
 
     @action(reach=False, holding=True)
     def put_on(self, world: "World", *args):
@@ -152,11 +169,29 @@ class Robot(Entity):
         world.move(obj, Location(Relation.IN, parent=target))
         world.emit("put", obj=obj.id, inside=target.id)
 
+    @action(reach=False, holding=True)
+    def release(self, world: "World"):
+        """Let go of something fixed in place (a key in a lock, a door handle). Use put_down for carried objects."""
+        if not self.holding_fixed:
+            raise ActionFailure(Fail.NOT_SUPPORTED, f"{self.holding.id} is carried; use put_down")
+        obj, self.holding = self.holding, None
+        world.emit("released", obj=obj.id)
+
     @action(reach=False)
     def climb_down(self, world: "World"):
-        """Step down from the stool/chair the robot is standing on."""
+        """Step down from the stool/chair to a free neighbouring cell (preferably where Spot came from)."""
         if self.level is Level.LOW:
             raise ActionFailure(Fail.ALREADY, "the robot is already on the floor")
-        self.level = Level.LOW
-        self.standing_on = None
-        world.emit("robot_climbed_down", cell=list(self.cell))
+        self.check_can_move()
+        here = self.cell
+        candidates = []
+        if self.came_from is not None:
+            candidates.append(self.came_from)
+        candidates += [step(here, d) for d in (self.facing.opposite, *Direction)]
+        target = next((c for c in candidates if world.walkable(c)), None)
+        if target is None:
+            raise ActionFailure(Fail.NO_ACCESS, "no free cell to step down to")
+        stool = self.standing_on
+        self.cell, self.level, self.standing_on, self.came_from = target, Level.LOW, None, None
+        self.facing = direction_between(target, here)
+        world.emit("robot_climbed_down", cell=list(target), facing=self.facing.value, off=stool.id if stool else None)
