@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gridlab"
+version = "0.1.0"
+description = "Grid-world model of the Spot 'close down the lab' experiment, controllable over a socket"
+requires-python = ">=3.10"
+dependencies = ["pygame>=2.5", "Pillow>=10", "PyYAML>=6"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+include = ["gridlab*"]
