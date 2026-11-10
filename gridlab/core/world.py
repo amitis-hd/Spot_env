@@ -25,6 +25,8 @@ def all_thing_actions() -> set[str]:
 class WorldConfig:
     #: include the specific cause of failures (e.g. "binder_1 is sticking out") in responses
     verbose_failures: bool = False
+    #: do not tell the planner which locks a key opens (it has to try)
+    hide_key_targets: bool = False
 
 
 class World:
@@ -39,6 +41,7 @@ class World:
         self.history: list[dict] = []
         self.departed: list[str] = []       # people who left the lab
         self.goal = None                    # object with .check(world) -> dict
+        self.scenario_name = "unnamed"
         self._events: list[dict] = []
 
     # ================================================================ building
@@ -279,11 +282,17 @@ class World:
             "visible": self.is_visible(t),
             "movable": t.movable,
             "climbable": t.climbable,
-            "state": t.public_state(),
+            "state": self._state(t),
             "affordances": t.affordances(),
         }
         d.update(jsonable(t.extra_observation(self)))
         return d
+
+    def _state(self, t: Thing) -> dict:
+        st = t.public_state()
+        if self.config.hide_key_targets:
+            st.pop("opens", None)
+        return st
 
     def get_robot(self) -> dict:
         return {"id": self.robot.id, "kind": "robot", **self.robot.public_state(),
