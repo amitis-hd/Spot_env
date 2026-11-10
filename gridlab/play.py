@@ -116,9 +116,10 @@ def main(argv=None):
     ap.add_argument("--verbose", action="store_true", help="show the detailed cause of failures")
     a = ap.parse_args(argv)
 
+    import os
+    os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
     import pygame
 
-    from .core import WorldConfig
     from .scenarios import build_default_lab, build_world, load_scenario
     from .scenarios.generator import generate_spec
 
@@ -133,7 +134,7 @@ def main(argv=None):
         return w
 
     game = Game(factory)
-    pygame.init()
+    pygame.display.init()
     pygame.display.set_caption("gridlab")
     img = game.frame()
     screen = pygame.display.set_mode(img.size)
