@@ -137,6 +137,21 @@ class Thing(Entity):
     surface_capacity: Size | None = None   # largest size that can be put ON this (None = not a surface)
     weight = 1.0
 
+    def affordances(self) -> list[str]:
+        """Actions that make sense for this object given its static properties (never hidden state)."""
+        return sorted(a for a in type(self)._actions if self.affords(a))
+
+    def affords(self, name: str) -> bool:
+        if name == "pick_up":
+            return self.movable
+        if name == "grasp":
+            return self.graspable and not self.movable
+        if name in ("lock", "unlock"):
+            return getattr(self, "lock_type", None) == "manual"
+        if name in ("insert_key", "turn_key", "remove_key"):
+            return getattr(self, "lock_type", None) == "key"
+        return True
+
     # ---------------- hooks for subclasses ----------------
     def contents_visible(self) -> bool:
         """Are things IN this entity currently visible (e.g. drawer open)?"""
