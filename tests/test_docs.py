@@ -3,14 +3,17 @@ import re
 from pathlib import Path
 
 from gridlab.core import Fail
-from gridlab.server.session import QUERIES, Session, ServerOptions, episode_specs
+from gridlab.server.session import QUERIES
 
 DOC = (Path(__file__).parent.parent / "docs" / "protocol.md").read_text()
 
 
 def test_every_action_documented():
-    s = Session(episode_specs(), ServerOptions(log_dir=None, oracle_baseline=False))
-    missing = [a for a in s.action_docs() if f"`{a}" not in DOC]
+    from gridlab.core.robot import Robot
+    from gridlab.scenarios.loader import thing_types
+    builtin = [c for c in [Robot, *thing_types().values()] if c.__module__.startswith("gridlab.")]
+    names = {a for c in builtin for a in c._actions}
+    missing = [a for a in sorted(names) if f"`{a}" not in DOC]
     assert not missing, missing
 
 
