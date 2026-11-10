@@ -18,6 +18,9 @@ class Fail(str, Enum):
     LOCKED = "LOCKED"
     WRONG_KEY = "WRONG_KEY"
     ALREADY = "ALREADY"                    # already in the requested state
+    IS_OPEN = "IS_OPEN"                    # must be closed first (e.g. cannot lock an open drawer)
+    IS_CLOSED = "IS_CLOSED"                # must be open first
+    NO_KEY = "NO_KEY"                      # no key in this lock
     NO_ACCESS = "NO_ACCESS"                # go_to/climb_down: no free cell to stand on
     HOLDING_FIXED = "HOLDING_FIXED"        # gripper holds something fixed in place; release it first
     INVALID_POSITION = "INVALID_POSITION"  # outside the grid / not walkable

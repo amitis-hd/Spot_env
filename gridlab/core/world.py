@@ -11,6 +11,16 @@ from .geometry import Direction, Level, Pos, direction_between, step
 from .robot import Robot
 
 
+def all_thing_actions() -> set[str]:
+    """Every action name defined by any Thing subclass."""
+    names, stack = set(), [Thing]
+    while stack:
+        cls = stack.pop()
+        names |= set(cls._actions)
+        stack += cls.__subclasses__()
+    return names
+
+
 @dataclass
 class WorldConfig:
     #: include the specific cause of failures (e.g. "binder_1 is sticking out") in responses
@@ -27,6 +37,8 @@ class World:
         self.known: set[str] = set()        # ids the planner has been told about
         self.step_count = 0
         self.history: list[dict] = []
+        self.departed: list[str] = []       # people who left the lab
+        self.goal = None                    # object with .check(world) -> dict
         self._events: list[dict] = []
 
     # ================================================================ building
@@ -51,7 +63,9 @@ class World:
 
     def start(self):
         """Call once the scenario is built: settles derived state and initial knowledge."""
-        for t in self.things.values():
+        for t in list(self.things.values()):
+            t.validate(self)
+        for t in list(self.things.values()):
             t.update(self)
         self._events.clear()
         self.known = {tid for tid, t in self.things.items() if self.is_visible(t)}
@@ -61,9 +75,9 @@ class World:
         return 0 <= cell[0] < self.width and 0 <= cell[1] < self.height
 
     def things_at(self, cell: Pos, level: Level | None = None) -> list[Thing]:
-        """Things placed directly in a cell (not on/in other things)."""
+        """Things placed directly in a cell (not on/in other things, not doors in its walls)."""
         return [t for t in self.things.values()
-                if t.loc.relation is Relation.AT and t.loc.cell == tuple(cell)
+                if t.loc.relation is Relation.AT and t.loc.cell == tuple(cell) and not t.wall_mounted
                 and (level is None or t.loc.level is level)]
 
     def children(self, parent: Thing, relation: Relation | None = None) -> list[Thing]:
@@ -79,6 +93,11 @@ class World:
 
     def is_ancestor(self, a: Thing, b: Thing) -> bool:
         return a in self.ancestors(b)
+
+    def top(self, t: Thing) -> Thing:
+        while t.loc.parent is not None:
+            t = t.loc.parent
+        return t
 
     def root(self, t: Thing) -> tuple[Pos, Level, bool]:
         """(cell, level, held) where the thing physically is."""
@@ -107,6 +126,9 @@ class World:
     def default_reachable(self, t: Thing) -> bool:
         if not self.is_visible(t):
             return False
+        top = self.top(t)
+        if top is not t and top.wall_mounted:      # e.g. a chair standing in a doorway
+            return top.is_reachable(self)
         cell, level, held = self.root(t)
         r = self.robot
         if held or level is not r.level:
@@ -114,6 +136,9 @@ class World:
         return cell == r.facing_cell()
 
     def default_approach_poses(self, t: Thing) -> list[tuple[Pos, Direction]]:
+        top = self.top(t)
+        if top is not t and top.wall_mounted:
+            return top.approach_poses(self)
         cell, _, _ = self.root(t)
         poses = []
         for d in Direction:
@@ -128,9 +153,28 @@ class World:
         gripper empties it; subclasses that keep a grip (insert_key) set robot.holding again."""
         if self.robot.holding is t:
             self.robot.holding = None
+        t.protruding = False
         t.loc = loc
         if loc.relation is Relation.HELD:
             self.robot.holding = t
+
+    def remove(self, t: Thing):
+        """Take a thing out of the world (a person leaving the lab)."""
+        for child in self.children(t):
+            cell, level, _ = self.root(t)
+            self.move(child, Location(Relation.AT, cell=cell, level=level))
+        del self.things[t.id]
+        self.known.discard(t.id)
+        self.departed.append(t.id)
+
+    def open_exit(self):
+        """A door people can walk out through right now, or None."""
+        return next((t for t in self.things.values() if getattr(t, "is_exit_clear", None) and t.is_exit_clear(self)), None)
+
+    def check_goal(self) -> dict:
+        if self.goal is None:
+            return {"achieved": False, "conditions": {}, "note": "no goal set"}
+        return self.goal.check(self)
 
     def emit(self, type: str, **data):
         self._events.append({"type": type, **jsonable(data)})
@@ -191,7 +235,7 @@ class World:
             spec, attr = Robot._actions[name]
             self._check_hand(spec)
             return self._call(getattr(self.robot, attr), args)
-        if not any(name in type(t)._actions for t in self.things.values()):
+        if name not in all_thing_actions():
             raise ActionFailure(Fail.UNKNOWN_ACTION, f"unknown action '{name}'")
         if not args:
             raise ActionFailure(Fail.BAD_ARGS, f"{name} needs a target object")
@@ -277,11 +321,14 @@ class World:
                         parts.append(f"{lvl.value}: " + ", ".join(names))
                 if parts:
                     lines.append(f"({x},{y}) " + " | ".join(parts))
+        for t in self.things.values():
+            if t.wall_mounted:
+                lines.append(f"{self._tree(t)} in {t.public_state().get('side', '?')} wall of {t.loc.cell}: {t.public_state()}")
         return "\n".join(lines)
 
     def _tree(self, t: Thing) -> str:
         kids = self.children(t)
         if not kids:
             return t.id
-        inner = ", ".join(("in:" if k.loc.relation is Relation.IN else "on:") + self._tree(k) for k in kids)
+        inner = ", ".join(f"{k.loc.relation.value}:" + self._tree(k) for k in kids)
         return f"{t.id}{{{inner}}}"

@@ -39,7 +39,8 @@ class Size(IntEnum):
 class Relation(str, Enum):
     AT = "at"      # directly in a grid cell at a level
     ON = "on"      # on top of another thing
-    IN = "in"      # inside a container
+    IN = "in"      # inside a container (or standing in a doorway)
+    INSERTED = "inserted"  # a key sitting in a lock
     HELD = "held"  # in the robot's gripper
 
 
@@ -86,7 +87,7 @@ def jsonable(v: Any) -> Any:
 class Entity:
     kind = "entity"
     #: attributes never sent to the planner (e.g. weight: the planner must find out by trying)
-    hidden_props: frozenset[str] = frozenset({"weight"})
+    hidden_props: frozenset[str] = frozenset({"weight", "protruding"})
     #: attributes reported in the "state" field of observations
     state_props: tuple[str, ...] = ()
     #: action name -> (spec, method attribute name); filled in automatically
@@ -130,6 +131,8 @@ class Thing(Entity):
     graspable = False                      # fixed thing the gripper can hold on to (door handle, ...)
     blocks_cell = True                     # the robot cannot enter a cell holding this
     obstructs_drop = False                 # nothing can be put down in its place (e.g. a person)
+    wall_mounted = False                   # lives in the wall on a cell edge (doors); does not occupy the cell
+    protruding = False                     # sticks out of the container it is in (hidden from the planner)
     size = Size.SMALL
     surface_capacity: Size | None = None   # largest size that can be put ON this (None = not a surface)
     weight = 1.0
@@ -160,6 +163,12 @@ class Thing(Entity):
     def approach_poses(self, world: "World"):
         """(cell, facing) poses from which the robot can act on this; used by go_to."""
         return world.default_approach_poses(self)
+
+    def on_put_in(self, world: "World", obj: "Thing") -> None:
+        """Called after `obj` was put inside this."""
+
+    def validate(self, world: "World") -> None:
+        """Called by World.start(); raise ValueError for an impossible scenario."""
 
     def update(self, world: "World") -> None:
         """Called after every successful action; recompute derived state, emit events."""

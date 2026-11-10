@@ -167,6 +167,7 @@ class Robot(Entity):
         world.require_reachable(target)
         target.accept_in(world, obj)
         world.move(obj, Location(Relation.IN, parent=target))
+        target.on_put_in(world, obj)
         world.emit("put", obj=obj.id, inside=target.id)
 
     @action(reach=False, holding=True)
@@ -178,11 +179,32 @@ class Robot(Entity):
         world.emit("released", obj=obj.id)
 
     @action(reach=False)
-    def climb_down(self, world: "World"):
-        """Step down from the stool/chair to a free neighbouring cell (preferably where Spot came from)."""
-        if self.level is Level.LOW:
-            raise ActionFailure(Fail.ALREADY, "the robot is already on the floor")
+    def turn(self, world: "World", direction):
+        """Turn in place to face N/E/S/W (also works while standing on a stool)."""
+        try:
+            d = Direction(str(direction).upper())
+        except ValueError:
+            raise ActionFailure(Fail.BAD_ARGS, "direction must be N, E, S or W")
         self.check_can_move()
+        if d is self.facing:
+            raise ActionFailure(Fail.ALREADY, f"already facing {d.value}")
+        self.facing = d
+        world.emit("robot_turned", facing=d.value)
+
+    @action(reach=False)
+    def undock(self, world: "World"):
+        """Leave the charging dock, stepping to a free neighbouring cell facing the dock."""
+        if not self.docked:
+            raise ActionFailure(Fail.ALREADY, "the robot is not docked")
+        if self.holding_fixed:
+            raise ActionFailure(Fail.HOLDING_FIXED, f"the gripper is holding {self.holding.id}")
+        dock_cell = self.cell
+        self._step_off(world)
+        self.docked = False
+        world.emit("undocked", cell=list(self.cell), facing=self.facing.value)
+        return {"from": list(dock_cell)}
+
+    def _step_off(self, world: "World"):
         here = self.cell
         candidates = []
         if self.came_from is not None:
@@ -190,8 +212,17 @@ class Robot(Entity):
         candidates += [step(here, d) for d in (self.facing.opposite, *Direction)]
         target = next((c for c in candidates if world.walkable(c)), None)
         if target is None:
-            raise ActionFailure(Fail.NO_ACCESS, "no free cell to step down to")
-        stool = self.standing_on
-        self.cell, self.level, self.standing_on, self.came_from = target, Level.LOW, None, None
+            raise ActionFailure(Fail.NO_ACCESS, "no free cell to step to")
+        self.cell, self.came_from = target, None
         self.facing = direction_between(target, here)
-        world.emit("robot_climbed_down", cell=list(target), facing=self.facing.value, off=stool.id if stool else None)
+
+    @action(reach=False)
+    def climb_down(self, world: "World"):
+        """Step down from the stool/chair to a free neighbouring cell (preferably where Spot came from)."""
+        if self.level is Level.LOW:
+            raise ActionFailure(Fail.ALREADY, "the robot is already on the floor")
+        self.check_can_move()
+        stool = self.standing_on
+        self._step_off(world)
+        self.level, self.standing_on = Level.LOW, None
+        world.emit("robot_climbed_down", cell=list(self.cell), facing=self.facing.value, off=stool.id if stool else None)
